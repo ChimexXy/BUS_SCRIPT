@@ -5,23 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"time"
-)	
-
-const (
-	BASE_URL       = "https://bus-med.1337.ma/api"
-	TOKEN          = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTMyMDYxMywiZXhwIjoxNzY5OTI1NDEzfQ.5aXhXwqlKacbdfWGKRywErZYhT6qR7uDBCfvkhuH1YY"
-	ROUTE          = "Martil"          // or "Tetouan"
-	PRELOAD_LEAD   = 10 * time.Second  // how many seconds before to prefetch departure
-	REQUEST_TIMEOUT = 5 * time.Second  // per request timeout
 )
 
+/* ================= CONFIG ================= */
+
+const (
+	BASE_URL = "https://bus-med.1337.ma/api"
+
+	// 🔴 MUST be fresh & valid
+	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTI4MTU2NSwiZXhwIjoxNzY5ODg2MzY1fQ.HGo8CqvRh5iVxrSlvFzuCgaoMNoRro-g5hmiLfMH3NU"
+
+	ROUTE = "Martil" // or "Tetouan"
+
+	PRELOAD_LEAD    = 10 * time.Second
+	REQUEST_TIMEOUT = 5 * time.Second
+)
+
+/* ================= TYPES ================= */
+
 type Departure struct {
-	ID     int   `json:"id"`
-	Locked bool  `json:"locked"`
-	Route  Route `json:"route"`
+	ID          int   `json:"id"`
+	Locked      bool  `json:"locked"`
+	NbrToHome   int   `json:"nbr_to_home"`
+	NbrToCampus int   `json:"nbr_to_campus"`
+	Route       Route `json:"route"`
 }
 
 type Route struct {
@@ -33,151 +44,138 @@ type BookingRequest struct {
 	ToCampus    bool `json:"to_campus"`
 }
 
+/* ================= HTTP CLIENT ================= */
+
 var httpClient = &http.Client{
 	Timeout: REQUEST_TIMEOUT,
+	Transport: &http.Transport{
+		ForceAttemptHTTP2: false,
+		DialContext: (&net.Dialer{
+			Timeout: 4 * time.Second,
+		}).DialContext,
+	},
 }
+
+/* ================= MAIN ================= */
 
 func main() {
 	if len(os.Args) != 2 {
-		fmt.Println("Usage: ./bus_reservation HH:MM")
-		fmt.Println("Example: ./bus_reservation 19:30")
+		fmt.Println("Usage: ./bus HH:MM")
 		os.Exit(1)
 	}
 
-	targetStr := os.Args[1]
-
-	targetTime, err := nextOccurrence(targetStr)
+	target, err := nextOccurrence(os.Args[1])
 	if err != nil {
-		fmt.Printf("❌ Invalid time format: %v\n", err)
+		fmt.Println("❌ Invalid time format")
 		os.Exit(1)
 	}
 
-	fmt.Printf("🎯 Target reservation time: %s\n", targetTime.Format(time.RFC3339))
+	fmt.Println("🎯 Target time:", target.Format("2006-01-02 15:04:05"))
 
-	// Time to start preloading (few seconds before target)
-	preloadTime := targetTime.Add(-PRELOAD_LEAD)
-	now := time.Now()
+	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
-	// Sleep until preload time
-	if preloadTime.After(now) {
-		fmt.Printf("⏳ Sleeping until preload: %s\n", preloadTime.Format(time.RFC3339))
-		time.Sleep(time.Until(preloadTime))
-	}
-
-	fmt.Println("⚙️  Preloading departures & warming connection...")
-
-	// Try to get departure ID early (may fail if not open yet, that's fine)
-	departureID, err := getDepartureID()
+	fmt.Println("⚙️  Fetching departure…")
+	depID, toCampus, err := getDeparture()
 	if err != nil {
-		fmt.Printf("⚠️  Preload failed (will retry at target time): %v\n", err)
-	} else if departureID == 0 {
-		fmt.Println("⚠️  Preload: no available routes yet (will retry at target time).")
-	} else {
-		fmt.Printf("✅ Preload: got departure ID %d\n", departureID)
+		fmt.Println("⚠️ Preload failed:", err)
 	}
 
-	// Sleep until exact target time
-	now = time.Now()
-	if targetTime.After(now) {
-		fmt.Printf("⏳ Waiting for exact target time: %s\n", targetTime.Format(time.RFC3339))
-		time.Sleep(time.Until(targetTime))
-	}
+	sleepUntil(target, "Booking")
 
-	fmt.Println("🚀 Time reached! Trying to book...")
+	fmt.Println("🚀 BOOKING")
 
-	// Final attempt: if we don't have a departureID yet, fetch it again
-	if departureID == 0 {
-		departureID, err = getDepartureID()
+	if depID == 0 {
+		depID, toCampus, err = getDeparture()
 		if err != nil {
-			fmt.Printf("❌ Failed to get departure ID at booking time: %v\n", err)
-			os.Exit(1)
-		}
-		if departureID == 0 {
-			fmt.Printf("❌ No %s routes available at booking time\n", ROUTE)
+			fmt.Println("❌ No available seats:", err)
 			os.Exit(1)
 		}
 	}
 
-	if err := bookTicket(departureID); err != nil {
-		fmt.Printf("❌ Error booking bus: %v\n", err)
+	if err := bookOnce(depID, toCampus); err != nil {
+		fmt.Println("❌ Booking failed:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("✅ Bus booked successfully!")
+	fmt.Println("✅ BUS BOOKED SUCCESSFULLY")
 }
 
+/* ================= TIME ================= */
+
 func nextOccurrence(hhmm string) (time.Time, error) {
-	// Parse "HH:MM"
-	t, err := time.Parse("15:04", hhmm)
+	t, err := time.ParseInLocation("15:04", hhmm, time.Local)
 	if err != nil {
 		return time.Time{}, err
 	}
+
 	now := time.Now()
 	target := time.Date(
 		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0,
-		now.Location(),
+		t.Hour(), t.Minute(), 0, 0, time.Local,
 	)
 
-	// If time already passed today, schedule for tomorrow
 	if target.Before(now) {
 		target = target.Add(24 * time.Hour)
 	}
 	return target, nil
 }
 
-func getDepartureID() (int, error) {
-	req, err := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
-	if err != nil {
-		return 0, err
+func sleepUntil(t time.Time, label string) {
+	for time.Now().Before(t) {
+		fmt.Printf("⏳ %s in %v\r", label, time.Until(t).Truncate(time.Second))
+		time.Sleep(1 * time.Second)
 	}
+	fmt.Print("\n")
+}
+
+/* ================= API ================= */
+
+func getDeparture() (int, bool, error) {
+	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
 	req.Header.Set("Cookie", "le_token="+TOKEN)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("unexpected status from /departure/current: %d", resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+
+	var deps []Departure
+	if err := json.Unmarshal(body, &deps); err != nil {
+		return 0, false, err
 	}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, err
-	}
+	for _, d := range deps {
+		if d.Locked || d.Route.Name != ROUTE {
+			continue
+		}
 
-	var departures []Departure
-	if err := json.Unmarshal(body, &departures); err != nil {
-		return 0, err
-	}
-
-	for _, dep := range departures {
-		if dep.Route.Name == ROUTE && !dep.Locked {
-			return dep.ID, nil
+		if d.NbrToHome > 0 {
+			fmt.Println("➡️ Direction: TO_HOME")
+			return d.ID, false, nil
+		}
+		if d.NbrToCampus > 0 {
+			fmt.Println("➡️ Direction: TO_CAMPUS")
+			return d.ID, true, nil
 		}
 	}
 
-	return 0, nil // no available departure for that route
+	return 0, false, fmt.Errorf("no seats available")
 }
 
-func bookTicket(departureID int) error {
-	booking := BookingRequest{
-		DepartureID: departureID,
-		ToCampus:    false,
+/* ================= BOOKING ================= */
+
+func bookOnce(depID int, toCampus bool) error {
+	payload := BookingRequest{
+		DepartureID: depID,
+		ToCampus:    toCampus,
 	}
 
-	bookingJSON, err := json.Marshal(booking)
-	if err != nil {
-		return err
-	}
+	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(bookingJSON))
-	if err != nil {
-		return err
-	}
+	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
 	req.Header.Set("Cookie", "le_token="+TOKEN)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -186,11 +184,12 @@ func bookTicket(departureID int) error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusCreated {
 		return nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("booking failed, status: %d, body: %s", resp.StatusCode, string(body))
+	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 }
