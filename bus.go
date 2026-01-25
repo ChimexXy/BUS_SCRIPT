@@ -52,7 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("🎯 Target reservation time: %s\n", targetTime.Format(time.RFC3339))
+	fmt.Printf("🎯 Target reservation time: %s\n", targetTime.Format("2006-01-02 15:04:05 MST"))
 
 	// Time to start preloading (few seconds before target)
 	preloadTime := targetTime.Add(-PRELOAD_LEAD)
@@ -60,7 +60,7 @@ func main() {
 
 	// Sleep until preload time
 	if preloadTime.After(now) {
-		fmt.Printf("⏳ Sleeping until preload: %s\n", preloadTime.Format(time.RFC3339))
+		fmt.Printf("⏳ Sleeping until preload: %s\n", preloadTime.Format("2006-01-02 15:04:05 MST"))
 		time.Sleep(time.Until(preloadTime))
 	}
 
