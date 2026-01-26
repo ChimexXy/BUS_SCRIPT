@@ -17,7 +17,7 @@ import (
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 	
-	ROUTE = "Martil + Tetouan" // or "Tetouan"
+	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
 	REQUEST_TIMEOUT = 8 * time.Second
