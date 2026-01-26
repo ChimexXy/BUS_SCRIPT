@@ -103,15 +103,21 @@ func main() {
 /* ================= TIME ================= */
 
 func nextOccurrence(hhmm string) (time.Time, error) {
-	t, err := time.ParseInLocation("15:04", hhmm, time.Local)
+	loc, err := time.LoadLocation("Africa/Casablanca")
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	now := time.Now()
+	t, err := time.ParseInLocation("15:04", hhmm, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	now := time.Now().In(loc)
+
 	target := time.Date(
 		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0, time.Local,
+		t.Hour(), t.Minute(), 0, 0, loc,
 	)
 
 	if target.Before(now) {
