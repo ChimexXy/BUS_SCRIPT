@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,13 +17,10 @@ import (
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 
-	// 🔴 MUST be fresh & valid
-	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTM4OTEzOCwiZXhwIjoxNzY5OTkzOTM4fQ.S-k5fDk7ZqhZzKjbJEReMMzwPgkeG_IYUYXOcfUtWZg"
-
 	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
-	REQUEST_TIMEOUT = 5 * time.Second
+	REQUEST_TIMEOUT = 8 * time.Second
 )
 
 /* ================= TYPES ================= */
@@ -44,6 +42,21 @@ type BookingRequest struct {
 	ToCampus    bool `json:"to_campus"`
 }
 
+/* ================= GLOBAL TOKEN ================= */
+
+var TOKEN string
+
+func init() {
+	TOKEN = os.Getenv("BUS_TOKEN")
+	if TOKEN == "" {
+		fmt.Println("❌ BUS_TOKEN environment variable not set")
+		os.Exit(1)
+	}
+
+	// Force Go DNS resolver (CRITICAL for Android)
+	os.Setenv("GODEBUG", "netdns=go")
+}
+
 /* ================= HTTP CLIENT ================= */
 
 var httpClient = &http.Client{
@@ -52,10 +65,12 @@ var httpClient = &http.Client{
 		ForceAttemptHTTP2: false,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			d := net.Dialer{
-				Timeout:   5 * time.Second,
-				Resolver: &net.Resolver{PreferGo: true},
+				Timeout: 5 * time.Second,
+				Resolver: &net.Resolver{
+					PreferGo: true,
+				},
 			}
-			return d.DialContext(ctx, "tcp4", addr)
+			return d.DialContext(ctx, "tcp4", addr) // FORCE IPv4
 		},
 	},
 }
@@ -79,10 +94,7 @@ func main() {
 	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
 	fmt.Println("⚙️  Fetching departure…")
-	depID, toCampus, err := getDeparture()
-	if err != nil {
-		fmt.Println("⚠️ Preload failed:", err)
-	}
+	depID, toCampus, _ := getDeparture() // preload may fail (normal)
 
 	sleepUntil(target, "Booking")
 
@@ -120,86 +132,4 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 	now := time.Now().In(loc)
 
 	target := time.Date(
-		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0, loc,
-	)
-
-	if target.Before(now) {
-		target = target.Add(24 * time.Hour)
-	}
-	return target, nil
-}
-
-func sleepUntil(t time.Time, label string) {
-	for time.Now().Before(t) {
-		fmt.Printf("⏳ %s in %v\r", label, time.Until(t).Truncate(time.Second))
-		time.Sleep(1 * time.Second)
-	}
-	fmt.Print("\n")
-}
-
-/* ================= API ================= */
-
-func getDeparture() (int, bool, error) {
-	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
-	req.Header.Set("Cookie", "le_token="+TOKEN)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return 0, false, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	var deps []Departure
-	if err := json.Unmarshal(body, &deps); err != nil {
-		return 0, false, err
-	}
-
-	for _, d := range deps {
-		if d.Locked || d.Route.Name != ROUTE {
-			continue
-		}
-
-		if d.NbrToHome > 0 {
-			fmt.Println("➡️ Direction: TO_HOME")
-			return d.ID, false, nil
-		}
-		if d.NbrToCampus > 0 {
-			fmt.Println("➡️ Direction: TO_CAMPUS")
-			return d.ID, true, nil
-		}
-	}
-
-	return 0, false, fmt.Errorf("no seats available")
-}
-
-/* ================= BOOKING ================= */
-
-func bookOnce(depID int, toCampus bool) error {
-	payload := BookingRequest{
-		DepartureID: depID,
-		ToCampus:    toCampus,
-	}
-
-	data, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
-	req.Header.Set("Cookie", "le_token="+TOKEN)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusCreated {
-		return nil
-	}
-
-	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
-}
+		now.
