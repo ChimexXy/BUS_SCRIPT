@@ -50,9 +50,13 @@ var httpClient = &http.Client{
 	Timeout: REQUEST_TIMEOUT,
 	Transport: &http.Transport{
 		ForceAttemptHTTP2: false,
-		DialContext: (&net.Dialer{
-			Timeout: 4 * time.Second,
-		}).DialContext,
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			d := net.Dialer{
+				Timeout:   5 * time.Second,
+				Resolver: &net.Resolver{PreferGo: true},
+			}
+			return d.DialContext(ctx, "tcp4", addr)
+		},
 	},
 }
 
