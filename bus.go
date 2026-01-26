@@ -163,9 +163,19 @@ func sleepUntil(t time.Time, label string) {
 
 /* ================= API ================= */
 
+func applyHeaders(req *http.Request) {
+	req.Header.Set("Cookie", "le_token="+TOKEN)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Mobile)")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
+	req.Header.Set("Referer", "https://bus-med.1337.ma/")
+	req.Header.Set("Origin", "https://bus-med.1337.ma")
+}
+
 func getDeparture() (int, bool, error) {
 	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
-	req.Header.Set("Cookie", "le_token="+TOKEN)
+	applyHeaders(req)
+
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -209,8 +219,9 @@ func bookOnce(depID int, toCampus bool) error {
 	data, _ := json.Marshal(payload)
 
 	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
-	req.Header.Set("Cookie", "le_token="+TOKEN)
+	applyHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
+
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
