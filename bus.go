@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,11 +15,14 @@ import (
 
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
-	
+
+	// 🔴 MUST be fresh & valid
+	TOKEN = "PUT_YOUR_TOKEN_HERE"
+
 	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
-	REQUEST_TIMEOUT = 8 * time.Second
+	REQUEST_TIMEOUT = 5 * time.Second
 )
 
 /* ================= TYPES ================= */
@@ -42,36 +44,15 @@ type BookingRequest struct {
 	ToCampus    bool `json:"to_campus"`
 }
 
-/* ================= GLOBAL TOKEN ================= */
-
-var TOKEN string
-
-func init() {
-	TOKEN = os.Getenv("BUS_TOKEN")
-	if TOKEN == "" {
-		fmt.Println("❌ BUS_TOKEN environment variable not set")
-		os.Exit(1)
-	}
-
-	// Force Go DNS resolver (CRITICAL for Android)
-	os.Setenv("GODEBUG", "netdns=go")
-}
-
 /* ================= HTTP CLIENT ================= */
 
 var httpClient = &http.Client{
 	Timeout: REQUEST_TIMEOUT,
 	Transport: &http.Transport{
 		ForceAttemptHTTP2: false,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: 5 * time.Second,
-				Resolver: &net.Resolver{
-					PreferGo: true,
-				},
-			}
-			return d.DialContext(ctx, "tcp4", addr) // FORCE IPv4
-		},
+		DialContext: (&net.Dialer{
+			Timeout: 4 * time.Second,
+		}).DialContext,
 	},
 }
 
@@ -94,7 +75,10 @@ func main() {
 	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
 	fmt.Println("⚙️  Fetching departure…")
-	depID, toCampus, _ := getDeparture() // preload may fail (normal)
+	depID, toCampus, err := getDeparture()
+	if err != nil {
+		fmt.Println("⚠️ Preload failed:", err)
+	}
 
 	sleepUntil(target, "Booking")
 
@@ -119,21 +103,15 @@ func main() {
 /* ================= TIME ================= */
 
 func nextOccurrence(hhmm string) (time.Time, error) {
-	loc, err := time.LoadLocation("Africa/Casablanca")
+	t, err := time.ParseInLocation("15:04", hhmm, time.Local)
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	t, err := time.ParseInLocation("15:04", hhmm, loc)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	now := time.Now().In(loc)
-
+	now := time.Now()
 	target := time.Date(
 		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0, loc,
+		t.Hour(), t.Minute(), 0, 0, time.Local,
 	)
 
 	if target.Before(now) {
@@ -143,38 +121,18 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 }
 
 func sleepUntil(t time.Time, label string) {
-	for {
-		now := time.Now()
-		if !now.Before(t) {
-			break
-		}
-
-		remaining := time.Until(t)
-
-		if remaining > time.Second {
-			fmt.Printf("⏳ %s in %v\r", label, remaining.Truncate(time.Second))
-			time.Sleep(500 * time.Millisecond)
-		} else {
-			time.Sleep(5 * time.Millisecond)
-		}
+	for time.Now().Before(t) {
+		fmt.Printf("⏳ %s in %v\r", label, time.Until(t).Truncate(time.Second))
+		time.Sleep(1 * time.Second)
 	}
 	fmt.Print("\n")
 }
 
 /* ================= API ================= */
 
-func applyHeaders(req *http.Request) {
-	req.Header.Set("Cookie", "le_token="+TOKEN)
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13; Mobile)")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
-	req.Header.Set("Referer", "https://bus-med.1337.ma/")
-	req.Header.Set("Origin", "https://bus-med.1337.ma")
-}
-
 func getDeparture() (int, bool, error) {
 	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
-	applyHeaders(req)
+	req.Header.Set("Cookie", "le_token="+TOKEN)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -203,8 +161,6 @@ func getDeparture() (int, bool, error) {
 			return d.ID, true, nil
 		}
 	}
-	fmt.Println("Status:", resp.Status)
-	fmt.Println("Content-Type:", resp.Header.Get("Content-Type"))
 
 	return 0, false, fmt.Errorf("no seats available")
 }
@@ -220,9 +176,8 @@ func bookOnce(depID int, toCampus bool) error {
 	data, _ := json.Marshal(payload)
 
 	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
-	applyHeaders(req)
+	req.Header.Set("Cookie", "le_token="+TOKEN)
 	req.Header.Set("Content-Type", "application/json")
-
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
