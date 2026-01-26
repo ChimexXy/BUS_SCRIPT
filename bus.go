@@ -17,8 +17,6 @@ import (
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 	
-	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTM4OTEzOCwiZXhwIjoxNzY5OTkzOTM4fQ.S-k5fDk7ZqhZzKjbJEReMMzwPgkeG_IYUYXOcfUtWZg"
-	
 	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
