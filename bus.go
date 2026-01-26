@@ -176,10 +176,6 @@ func getDeparture() (int, bool, error) {
 	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
 	applyHeaders(req)
 
-
-	fmt.Println("Status:", resp.Status)
-	fmt.Println("Content-Type:", resp.Header.Get("Content-Type"))
-
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, false, err
@@ -207,6 +203,8 @@ func getDeparture() (int, bool, error) {
 			return d.ID, true, nil
 		}
 	}
+	fmt.Println("Status:", resp.Status)
+	fmt.Println("Content-Type:", resp.Header.Get("Content-Type"))
 
 	return 0, false, fmt.Errorf("no seats available")
 }
