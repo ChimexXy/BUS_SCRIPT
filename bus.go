@@ -17,7 +17,7 @@ const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 
 	// 🔴 MUST be fresh & valid
-	TOKEN = "PUT_YOUR_TOKEN_HERE"
+	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTQ0MjUwMSwiZXhwIjoxNzcwMDQ3MzAxfQ.6rkCLUyCSk2ptT1lSz7ouhDn9GFjJaD_cSqOrcVpljM"
 
 	ROUTE = "Martil" // or "Tetouan"
 
