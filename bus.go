@@ -132,4 +132,97 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 	now := time.Now().In(loc)
 
 	target := time.Date(
-		now.
+		now.Year(), now.Month(), now.Day(),
+		t.Hour(), t.Minute(), 0, 0, loc,
+	)
+
+	if target.Before(now) {
+		target = target.Add(24 * time.Hour)
+	}
+	return target, nil
+}
+
+func sleepUntil(t time.Time, label string) {
+	for {
+		now := time.Now()
+		if !now.Before(t) {
+			break
+		}
+
+		remaining := time.Until(t)
+
+		if remaining > time.Second {
+			fmt.Printf("⏳ %s in %v\r", label, remaining.Truncate(time.Second))
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	fmt.Print("\n")
+}
+
+/* ================= API ================= */
+
+func getDeparture() (int, bool, error) {
+	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
+	req.Header.Set("Cookie", "le_token="+TOKEN)
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, false, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	var deps []Departure
+	if err := json.Unmarshal(body, &deps); err != nil {
+		return 0, false, err
+	}
+
+	for _, d := range deps {
+		if d.Locked || d.Route.Name != ROUTE {
+			continue
+		}
+
+		if d.NbrToHome > 0 {
+			fmt.Println("➡️ Direction: TO_HOME")
+			return d.ID, false, nil
+		}
+		if d.NbrToCampus > 0 {
+			fmt.Println("➡️ Direction: TO_CAMPUS")
+			return d.ID, true, nil
+		}
+	}
+
+	return 0, false, fmt.Errorf("no seats available")
+}
+
+/* ================= BOOKING ================= */
+
+func bookOnce(depID int, toCampus bool) error {
+	payload := BookingRequest{
+		DepartureID: depID,
+		ToCampus:    toCampus,
+	}
+
+	data, _ := json.Marshal(payload)
+
+	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
+	req.Header.Set("Cookie", "le_token="+TOKEN)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusCreated {
+		return nil
+	}
+
+	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
+}
