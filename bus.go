@@ -177,6 +177,9 @@ func getDeparture() (int, bool, error) {
 	applyHeaders(req)
 
 
+	fmt.Println("Status:", resp.Status)
+	fmt.Println("Content-Type:", resp.Header.Get("Content-Type"))
+
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		return 0, false, err
