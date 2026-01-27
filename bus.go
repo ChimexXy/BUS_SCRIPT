@@ -19,7 +19,7 @@ const (
 	// 🔴 MUST be fresh & valid
 	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEyNCwibG9naW4iOiJnZWwtbWVqZCIsImlhdCI6MTc2OTQ1ODk1MywiZXhwIjoxNzcwMDYzNzUzfQ.2okCB2qmRNV6vknU18AsGcIE3KtNVZ5nWWM8hfc1yRg"
 
-	ROUTE = "Martil + Mdiq" // or "Tetouan"
+	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
 	REQUEST_TIMEOUT = 6 * time.Second
