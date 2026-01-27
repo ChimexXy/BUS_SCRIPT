@@ -17,12 +17,12 @@ const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 
 	// 🔴 MUST be fresh & valid
-	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTQ0MjUwMSwiZXhwIjoxNzcwMDQ3MzAxfQ.6rkCLUyCSk2ptT1lSz7ouhDn9GFjJaD_cSqOrcVpljM"
+	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTUxNzM0MywiZXhwIjoxNzcwMTIyMTQzfQ.mcrrCqFeoEl0QUJvT_gb3x5H8BoboRMHyFnGhsATmHY"
 
 	ROUTE = "Martil" // or "Tetouan"
 
 	PRELOAD_LEAD    = 10 * time.Second
-	REQUEST_TIMEOUT = 5 * time.Second
+	REQUEST_TIMEOUT = 6 * time.Second
 )
 
 /* ================= TYPES ================= */
@@ -75,10 +75,7 @@ func main() {
 	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
 	fmt.Println("⚙️  Fetching departure…")
-	depID, toCampus, err := getDeparture()
-	if err != nil {
-		fmt.Println("⚠️ Preload failed:", err)
-	}
+	depID, toCampus, _ := getDeparture() // preload may fail (normal)
 
 	sleepUntil(target, "Booking")
 
@@ -103,15 +100,18 @@ func main() {
 /* ================= TIME ================= */
 
 func nextOccurrence(hhmm string) (time.Time, error) {
-	t, err := time.ParseInLocation("15:04", hhmm, time.Local)
+	loc, _ := time.LoadLocation("Africa/Casablanca")
+
+	t, err := time.ParseInLocation("15:04", hhmm, loc)
 	if err != nil {
 		return time.Time{}, err
 	}
 
-	now := time.Now()
+	now := time.Now().In(loc)
+
 	target := time.Date(
 		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0, time.Local,
+		t.Hour(), t.Minute(), 0, 0, loc,
 	)
 
 	if target.Before(now) {
@@ -121,18 +121,36 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 }
 
 func sleepUntil(t time.Time, label string) {
-	for time.Now().Before(t) {
-		fmt.Printf("⏳ %s in %v\r", label, time.Until(t).Truncate(time.Second))
-		time.Sleep(1 * time.Second)
+	for {
+		now := time.Now()
+		if !now.Before(t) {
+			break
+		}
+		remaining := time.Until(t)
+
+		if remaining > time.Second {
+			fmt.Printf("⏳ %s in %v\r", label, remaining.Truncate(time.Second))
+			time.Sleep(500 * time.Millisecond)
+		} else {
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	fmt.Print("\n")
 }
 
 /* ================= API ================= */
 
+func applyHeaders(req *http.Request) {
+	req.Header.Set("Cookie", "le_token="+TOKEN)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Linux; Android 13)")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://bus-med.1337.ma/")
+	req.Header.Set("Origin", "https://bus-med.1337.ma")
+}
+
 func getDeparture() (int, bool, error) {
 	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
-	req.Header.Set("Cookie", "le_token="+TOKEN)
+	applyHeaders(req)
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -142,24 +160,40 @@ func getDeparture() (int, bool, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 
+	// 🛑 Prevent HTML response
+	if len(body) > 0 && body[0] == '<' {
+		return 0, false, fmt.Errorf("HTML response (invalid token or blocked)")
+	}
+
 	var deps []Departure
 	if err := json.Unmarshal(body, &deps); err != nil {
 		return 0, false, err
 	}
+
+	var fallbackID int
+	var fallbackToCampus bool
 
 	for _, d := range deps {
 		if d.Locked || d.Route.Name != ROUTE {
 			continue
 		}
 
+		// Priority: TO_HOME
 		if d.NbrToHome > 0 {
-			fmt.Println("➡️ Direction: TO_HOME")
+			fmt.Println("➡️ Found bus", d.ID, "TO_HOME")
 			return d.ID, false, nil
 		}
-		if d.NbrToCampus > 0 {
-			fmt.Println("➡️ Direction: TO_CAMPUS")
-			return d.ID, true, nil
+
+		// Fallback: TO_CAMPUS
+		if d.NbrToCampus > 0 && fallbackID == 0 {
+			fallbackID = d.ID
+			fallbackToCampus = true
 		}
+	}
+
+	if fallbackID != 0 {
+		fmt.Println("➡️ Found bus", fallbackID, "TO_CAMPUS")
+		return fallbackID, fallbackToCampus, nil
 	}
 
 	return 0, false, fmt.Errorf("no seats available")
@@ -176,7 +210,7 @@ func bookOnce(depID int, toCampus bool) error {
 	data, _ := json.Marshal(payload)
 
 	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
-	req.Header.Set("Cookie", "le_token="+TOKEN)
+	applyHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := httpClient.Do(req)
