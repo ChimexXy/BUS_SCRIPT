@@ -17,7 +17,7 @@ const (
 	BASE_URL = "https://bus-med.1337.ma/api"
 
 	// 🔴 MUST be fresh & valid
-	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTUxNzM0MywiZXhwIjoxNzcwMTIyMTQzfQ.mcrrCqFeoEl0QUJvT_gb3x5H8BoboRMHyFnGhsATmHY"
+	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjEyNCwibG9naW4iOiJnZWwtbWVqZCIsImlhdCI6MTc2OTQ1ODk1MywiZXhwIjoxNzcwMDYzNzUzfQ.2okCB2qmRNV6vknU18AsGcIE3KtNVZ5nWWM8hfc1yRg"
 
 	ROUTE = "Martil" // or "Tetouan"
 
