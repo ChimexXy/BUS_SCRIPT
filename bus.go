@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -15,9 +16,10 @@ import (
 
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
-
+	
 	// 🔴 MUST be fresh & valid
-	TOKEN = "PUT_YOUR_TOKEN_HERE"
+	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTUxNzM0MywiZXhwIjoxNzcwMTIyMTQzfQ.mcrrCqFeoEl0QUJvT_gb3x5H8BoboRMHyFnGhsATmHY"
+	// TOKEN = "PUT_YOUR_TOKEN_HERE"
 
 	ROUTE = "Martil" // or "Tetouan"
 
@@ -160,7 +162,6 @@ func getDeparture() (int, bool, error) {
 
 	body, _ := io.ReadAll(resp.Body)
 
-	// 🛑 Prevent HTML response
 	if len(body) > 0 && body[0] == '<' {
 		return 0, false, fmt.Errorf("HTML response (invalid token or blocked)")
 	}
@@ -170,33 +171,15 @@ func getDeparture() (int, bool, error) {
 		return 0, false, err
 	}
 
-	var fallbackID int
-	var fallbackToCampus bool
-
 	for _, d := range deps {
-		if d.Locked || d.Route.Name != ROUTE {
-			continue
-		}
-
-		// Priority: TO_HOME
-		if d.NbrToHome > 0 {
-			fmt.Println("➡️ Found bus", d.ID, "TO_HOME")
-			return d.ID, false, nil
-		}
-
-		// Fallback: TO_CAMPUS
-		if d.NbrToCampus > 0 && fallbackID == 0 {
-			fallbackID = d.ID
-			fallbackToCampus = true
+		if d.Route.Name == ROUTE && !d.Locked {
+			fmt.Printf("➡️ Found bus %d (Martil)\n", d.ID)
+			// Just return it - let the booking API decide if seats available
+			return d.ID, false, nil // Try TO_HOME first
 		}
 	}
 
-	if fallbackID != 0 {
-		fmt.Println("➡️ Found bus", fallbackID, "TO_CAMPUS")
-		return fallbackID, fallbackToCampus, nil
-	}
-
-	return 0, false, fmt.Errorf("no seats available")
+	return 0, false, fmt.Errorf("no %s bus found", ROUTE)
 }
 
 /* ================= BOOKING ================= */
