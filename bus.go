@@ -1,4 +1,3 @@
-
 package main
 
 import (
@@ -16,15 +15,12 @@ import (
 
 const (
 	BASE_URL = "https://bus-med.1337.ma/api"
-	
-	// 🔴 MUST be fresh & valid
-	TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTUxNzM0MywiZXhwIjoxNzcwMTIyMTQzfQ.mcrrCqFeoEl0QUJvT_gb3x5H8BoboRMHyFnGhsATmHY"
-	// TOKEN = "PUT_YOUR_TOKEN_HERE"
-
-	ROUTE = "Martil" // or "Tetouan"
+	TOKEN    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTY3NjE2MCwiZXhwIjoxNzcwMjgwOTYwfQ.qKF1BZ2_iXsxLdedwO_5FFEbjWVB9o45jTr_0CyHFQ4"
+	ROUTE    = "Martil"
 
 	PRELOAD_LEAD    = 10 * time.Second
-	REQUEST_TIMEOUT = 6 * time.Second
+	REQUEST_TIMEOUT = 3 * time.Second
+	DIAL_TIMEOUT    = 2 * time.Second
 )
 
 /* ================= TYPES ================= */
@@ -51,9 +47,16 @@ type BookingRequest struct {
 var httpClient = &http.Client{
 	Timeout: REQUEST_TIMEOUT,
 	Transport: &http.Transport{
-		ForceAttemptHTTP2: false,
+		ForceAttemptHTTP2:     false,
+		MaxIdleConns:          10,
+		MaxIdleConnsPerHost:   5,
+		IdleConnTimeout:       30 * time.Second,
+		DisableKeepAlives:     false,
+		DisableCompression:    false,
+		ExpectContinueTimeout: 1 * time.Second,
 		DialContext: (&net.Dialer{
-			Timeout: 4 * time.Second,
+			Timeout:   DIAL_TIMEOUT,
+			KeepAlive: 30 * time.Second,
 		}).DialContext,
 	},
 }
@@ -77,15 +80,14 @@ func main() {
 	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
 	fmt.Println("⚙️  Fetching departure…")
-	depID, toCampus, _ := getDeparture() // preload may fail (normal)
+	depID, toCampus, _ := getDeparture()
 
 	sleepUntil(target, "Booking")
 
 	fmt.Println("🚀 BOOKING")
 
 	if depID == 0 {
-		depID, toCampus, err = getDeparture()
-		if err != nil {
+		if depID, toCampus, err = getDeparture(); err != nil {
 			fmt.Println("❌ No available seats:", err)
 			os.Exit(1)
 		}
@@ -102,7 +104,10 @@ func main() {
 /* ================= TIME ================= */
 
 func nextOccurrence(hhmm string) (time.Time, error) {
-	loc, _ := time.LoadLocation("Africa/Casablanca")
+	loc, err := time.LoadLocation("Africa/Casablanca")
+	if err != nil {
+		return time.Time{}, err
+	}
 
 	t, err := time.ParseInLocation("15:04", hhmm, loc)
 	if err != nil {
@@ -110,11 +115,7 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 	}
 
 	now := time.Now().In(loc)
-
-	target := time.Date(
-		now.Year(), now.Month(), now.Day(),
-		t.Hour(), t.Minute(), 0, 0, loc,
-	)
+	target := time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, loc)
 
 	if target.Before(now) {
 		target = target.Add(24 * time.Hour)
@@ -124,17 +125,18 @@ func nextOccurrence(hhmm string) (time.Time, error) {
 
 func sleepUntil(t time.Time, label string) {
 	for {
-		now := time.Now()
-		if !now.Before(t) {
+		remaining := time.Until(t)
+		if remaining <= 0 {
 			break
 		}
-		remaining := time.Until(t)
 
 		if remaining > time.Second {
 			fmt.Printf("⏳ %s in %v\r", label, remaining.Truncate(time.Second))
 			time.Sleep(500 * time.Millisecond)
+		} else if remaining > 10*time.Millisecond {
+			time.Sleep(2 * time.Millisecond)
 		} else {
-			time.Sleep(5 * time.Millisecond)
+			time.Sleep(500 * time.Microsecond)
 		}
 	}
 	fmt.Print("\n")
@@ -151,7 +153,10 @@ func applyHeaders(req *http.Request) {
 }
 
 func getDeparture() (int, bool, error) {
-	req, _ := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
+	req, err := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
+	if err != nil {
+		return 0, false, err
+	}
 	applyHeaders(req)
 
 	resp, err := httpClient.Do(req)
@@ -160,10 +165,13 @@ func getDeparture() (int, bool, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, false, err
+	}
 
 	if len(body) > 0 && body[0] == '<' {
-		return 0, false, fmt.Errorf("HTML response (invalid token or blocked)")
+		return 0, false, fmt.Errorf("invalid token or blocked")
 	}
 
 	var deps []Departure
@@ -173,9 +181,8 @@ func getDeparture() (int, bool, error) {
 
 	for _, d := range deps {
 		if d.Route.Name == ROUTE && !d.Locked {
-			fmt.Printf("➡️ Found bus %d (Martil)\n", d.ID)
-			// Just return it - let the booking API decide if seats available
-			return d.ID, false, nil // Try TO_HOME first
+			fmt.Printf("➡️ Found bus %d (%s)\n", d.ID, ROUTE)
+			return d.ID, false, nil
 		}
 	}
 
@@ -190,9 +197,15 @@ func bookOnce(depID int, toCampus bool) error {
 		ToCampus:    toCampus,
 	}
 
-	data, _ := json.Marshal(payload)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
 
-	req, _ := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
+	req, err := http.NewRequest("POST", BASE_URL+"/tickets/book", bytes.NewBuffer(data))
+	if err != nil {
+		return err
+	}
 	applyHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
@@ -202,11 +215,10 @@ func bookOnce(depID int, toCampus bool) error {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-
 	if resp.StatusCode == http.StatusCreated {
 		return nil
 	}
 
+	body, _ := io.ReadAll(resp.Body)
 	return fmt.Errorf("status %d: %s", resp.StatusCode, string(body))
 }
