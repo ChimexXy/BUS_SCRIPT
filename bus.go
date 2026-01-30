@@ -18,9 +18,13 @@ const (
 	TOKEN    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTY3NjE2MCwiZXhwIjoxNzcwMjgwOTYwfQ.qKF1BZ2_iXsxLdedwO_5FFEbjWVB9o45jTr_0CyHFQ4"
 	ROUTE    = "Martil"
 
-	PRELOAD_LEAD       = 10 * time.Second
-	MAX_BOOKING_TRIES  = 3
-	RETRY_DELAY        = 200 * time.Millisecond
+	// Monitor for bus ID changes starting this early
+	MONITOR_START      = 60 * time.Second
+	CHECK_INTERVAL     = 3 * time.Second   // Check every 3s for new bus
+	FINAL_CHECK_WINDOW = 5 * time.Second   // Check every 1s in final 5 seconds
+	
+	MAX_BOOKING_TRIES  = 5
+	RETRY_DELAY        = 300 * time.Millisecond
 
 	REQUEST_TIMEOUT = 3 * time.Second
 	DIAL_TIMEOUT    = 2 * time.Second
@@ -81,44 +85,104 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Println("🎯 Target time:", target.Format("2006-01-02 15:04:05.000"))
+	fmt.Println("🎯 Target time:", target.Format("2006-01-02 15:04:05"))
 
-	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
+	// Start monitoring early for bus ID changes
+	monitorStart := target.Add(-MONITOR_START)
+	sleepUntil(monitorStart, "Start monitoring")
 
-	fmt.Println("⚙️  Prefetching departure...")
-	depID, toCampus, _ := getDeparture()
+	fmt.Println("🔍 Monitoring for bus updates...")
 
-	sleepUntil(target, "Booking")
+	var currentBusID int
+	var toCampus bool
+	lastSeenID := 0
+	updateCount := 0
 
-	fmt.Println("🚀 BOOKING NOW!")
+	// Keep monitoring until we reach target time
+	for {
+		now := time.Now()
+		remaining := time.Until(target)
 
-	// Final fetch if we don't have a bus
-	if depID == 0 {
-		if depID, toCampus, err = getDeparture(); err != nil {
-			fmt.Println("❌ No available bus:", err)
-			os.Exit(1)
+		// Stop monitoring when we hit target time
+		if remaining <= 0 {
+			break
 		}
+
+		// Fetch current bus
+		busID, tc, err := getDepartureQuiet()
+		if err == nil && busID != 0 {
+			currentBusID = busID
+			toCampus = tc
+
+			// Notify if bus ID changed
+			if busID != lastSeenID && lastSeenID != 0 {
+				updateCount++
+				fmt.Printf("🔄 Bus ID updated: %d -> %d (update #%d)\n", lastSeenID, busID, updateCount)
+			}
+			lastSeenID = busID
+		}
+
+		// Adaptive check interval: faster when close to target time
+		var sleepDuration time.Duration
+		if remaining <= FINAL_CHECK_WINDOW {
+			sleepDuration = 500 * time.Millisecond // Check every 0.5s in final 5 seconds
+		} else {
+			sleepDuration = CHECK_INTERVAL // Check every 3s normally
+		}
+
+		// Show countdown periodically
+		if remaining > time.Second {
+			fmt.Printf("⏳ Booking in %v (Bus ID: %d)\r", remaining.Truncate(time.Second), currentBusID)
+		}
+
+		// Sleep until next check or target time
+		nextCheck := now.Add(sleepDuration)
+		if nextCheck.After(target) {
+			sleepUntil(target, "")
+			break
+		}
+		time.Sleep(sleepDuration)
 	}
 
-	// Try booking with retries
+	fmt.Print("\n🚀 BOOKING NOW!\n")
+
+	// Final pre-booking check to ensure we have latest bus ID
+	finalID, finalTC, err := getDeparture()
+	if err == nil && finalID != 0 {
+		if finalID != currentBusID {
+			fmt.Printf("⚡ Last-second update: %d -> %d\n", currentBusID, finalID)
+		}
+		currentBusID = finalID
+		toCampus = finalTC
+	}
+
+	if currentBusID == 0 {
+		fmt.Println("❌ No available bus found")
+		os.Exit(1)
+	}
+
+	fmt.Printf("📍 Booking bus ID: %d\n", currentBusID)
+
+	// Try booking with retries and dynamic ID updates
 	for attempt := 1; attempt <= MAX_BOOKING_TRIES; attempt++ {
-		err := bookOnce(depID, toCampus)
+		err := bookOnce(currentBusID, toCampus)
 		if err == nil {
-			fmt.Println("✅ BUS BOOKED SUCCESSFULLY")
-			fmt.Println("⏱️  Booked at:", time.Now().Format("15:04:05.000"))
+			fmt.Println("✅ BUS BOOKED SUCCESSFULLY!")
+			fmt.Printf("⏱️  Booked at: %s\n", time.Now().Format("15:04:05.000"))
+			fmt.Printf("🎫 Bus ID: %d\n", currentBusID)
 			return
 		}
 
 		fmt.Printf("⚠️  Attempt %d/%d failed: %v\n", attempt, MAX_BOOKING_TRIES, err)
 		
 		if attempt < MAX_BOOKING_TRIES {
-			// Try fetching fresh bus ID
+			// Fetch fresh bus ID in case it changed during booking attempts
 			newID, newTC, fetchErr := getDeparture()
 			if fetchErr == nil && newID != 0 {
-				if newID != depID {
-					fmt.Printf("🔄 New bus ID: %d -> %d\n", depID, newID)
+				if newID != currentBusID {
+					fmt.Printf("🔄 Bus ID changed during retry: %d -> %d\n", currentBusID, newID)
 				}
-				depID = newID
+				currentBusID = newID
 				toCampus = newTC
 			}
 			time.Sleep(RETRY_DELAY)
@@ -167,20 +231,23 @@ func sleepUntil(t time.Time, label string) {
 			break
 		}
 
-		if remaining > time.Second {
+		if label != "" && remaining > time.Second {
 			fmt.Printf("⏳ %s in %v\r", label, remaining.Truncate(time.Second))
+		}
+
+		if remaining > time.Second {
 			time.Sleep(100 * time.Millisecond)
 		} else if remaining > 100*time.Millisecond {
-			// Fine-grained sleep when close
 			time.Sleep(10 * time.Millisecond)
 		} else if remaining > 10*time.Millisecond {
 			time.Sleep(time.Millisecond)
 		} else {
-			// Busy wait for final milliseconds (most accurate)
 			time.Sleep(500 * time.Microsecond)
 		}
 	}
-	fmt.Print("\n")
+	if label != "" {
+		fmt.Print("\n")
+	}
 }
 
 /* ================= API ================= */
@@ -193,7 +260,17 @@ func applyHeaders(req *http.Request) {
 	req.Header.Set("Origin", "https://bus-med.1337.ma")
 }
 
+// getDeparture - verbose version that prints bus info
 func getDeparture() (int, bool, error) {
+	id, tc, err := getDepartureQuiet()
+	if err == nil && id != 0 {
+		fmt.Printf("➡️  Found bus %d (%s)\n", id, ROUTE)
+	}
+	return id, tc, err
+}
+
+// getDepartureQuiet - silent version for monitoring loop
+func getDepartureQuiet() (int, bool, error) {
 	req, err := http.NewRequest("GET", BASE_URL+"/departure/current", nil)
 	if err != nil {
 		return 0, false, err
@@ -232,7 +309,6 @@ func getDeparture() (int, bool, error) {
 	}
 
 	if bestDep != nil {
-		fmt.Printf("➡️  Found bus %d (%s)\n", bestDep.ID, ROUTE)
 		return bestDep.ID, false, nil
 	}
 
