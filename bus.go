@@ -18,7 +18,12 @@ const (
 	TOKEN    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTY3NjE2MCwiZXhwIjoxNzcwMjgwOTYwfQ.qKF1BZ2_iXsxLdedwO_5FFEbjWVB9o45jTr_0CyHFQ4"
 	ROUTE    = "Martil"
 
-	PRELOAD_LEAD    = 10 * time.Second
+	// Strategy: Check API multiple times before target time
+	PRELOAD_LEAD       = 30 * time.Second  // Start checking 30s early
+	CHECK_INTERVAL     = 2 * time.Second   // Check every 2s for new bus
+	MAX_BOOKING_TRIES  = 5                 // Try booking 5 times if it fails
+	RETRY_DELAY        = 500 * time.Millisecond
+
 	REQUEST_TIMEOUT = 3 * time.Second
 	DIAL_TIMEOUT    = 2 * time.Second
 )
@@ -26,11 +31,12 @@ const (
 /* ================= TYPES ================= */
 
 type Departure struct {
-	ID          int   `json:"id"`
-	Locked      bool  `json:"locked"`
-	NbrToHome   int   `json:"nbr_to_home"`
-	NbrToCampus int   `json:"nbr_to_campus"`
-	Route       Route `json:"route"`
+	ID           int       `json:"id"`
+	Locked       bool      `json:"locked"`
+	NbrToHome    int       `json:"nbr_to_home"`
+	NbrToCampus  int       `json:"nbr_to_campus"`
+	DepartureTime string   `json:"departure_time"`
+	Route        Route     `json:"route"`
 }
 
 type Route struct {
@@ -77,28 +83,82 @@ func main() {
 
 	fmt.Println("🎯 Target time:", target.Format("2006-01-02 15:04:05"))
 
+	// Sleep until preload time
 	sleepUntil(target.Add(-PRELOAD_LEAD), "Preload")
 
-	fmt.Println("⚙️  Fetching departure…")
-	depID, toCampus, _ := getDeparture()
+	fmt.Println("🔍 Starting bus monitoring...")
 
-	sleepUntil(target, "Booking")
+	var depID int
+	var toCampus bool
+	lastSeenID := 0
 
-	fmt.Println("🚀 BOOKING")
+	// Keep checking for new buses until target time
+	for {
+		now := time.Now()
+		
+		// If we've reached target time, break and book
+		if !now.Before(target) {
+			break
+		}
 
+		// Try to get departure
+		id, tc, err := getDeparture()
+		if err == nil && id != 0 {
+			// New bus detected!
+			if id != lastSeenID {
+				fmt.Printf("🆕 New bus detected! ID: %d (was: %d)\n", id, lastSeenID)
+				lastSeenID = id
+			}
+			depID = id
+			toCampus = tc
+		}
+
+		// Don't spam the API - wait before next check
+		remaining := time.Until(target)
+		if remaining > CHECK_INTERVAL {
+			time.Sleep(CHECK_INTERVAL)
+		} else if remaining > 0 {
+			time.Sleep(100 * time.Millisecond)
+		} else {
+			break
+		}
+	}
+
+	fmt.Println("🚀 BOOKING NOW!")
+
+	// Final check if we don't have a bus yet
 	if depID == 0 {
+		fmt.Println("⚡ Final departure fetch...")
 		if depID, toCampus, err = getDeparture(); err != nil {
-			fmt.Println("❌ No available seats:", err)
+			fmt.Println("❌ No available bus:", err)
 			os.Exit(1)
 		}
 	}
 
-	if err := bookOnce(depID, toCampus); err != nil {
-		fmt.Println("❌ Booking failed:", err)
-		os.Exit(1)
+	// Try booking with retries
+	for attempt := 1; attempt <= MAX_BOOKING_TRIES; attempt++ {
+		err := bookOnce(depID, toCampus)
+		if err == nil {
+			fmt.Println("✅ BUS BOOKED SUCCESSFULLY")
+			return
+		}
+
+		fmt.Printf("⚠️  Booking attempt %d/%d failed: %v\n", attempt, MAX_BOOKING_TRIES, err)
+		
+		if attempt < MAX_BOOKING_TRIES {
+			// Maybe bus ID changed, try fetching again
+			newID, newTC, fetchErr := getDeparture()
+			if fetchErr == nil && newID != 0 && newID != depID {
+				fmt.Printf("🔄 Bus ID changed: %d -> %d, retrying...\n", depID, newID)
+				depID = newID
+				toCampus = newTC
+			}
+			time.Sleep(RETRY_DELAY)
+		}
 	}
 
-	fmt.Println("✅ BUS BOOKED SUCCESSFULLY")
+	fmt.Println("❌ All booking attempts failed")
+	os.Exit(1)
 }
 
 /* ================= TIME ================= */
@@ -179,11 +239,20 @@ func getDeparture() (int, bool, error) {
 		return 0, false, err
 	}
 
-	for _, d := range deps {
+	// Find the most recent unlocked bus for our route
+	var bestDep *Departure
+	for i := range deps {
+		d := &deps[i]
 		if d.Route.Name == ROUTE && !d.Locked {
-			fmt.Printf("➡️ Found bus %d (%s)\n", d.ID, ROUTE)
-			return d.ID, false, nil
+			// Prefer the newest ID (buses added later have higher IDs)
+			if bestDep == nil || d.ID > bestDep.ID {
+				bestDep = d
+			}
 		}
+	}
+
+	if bestDep != nil {
+		return bestDep.ID, false, nil
 	}
 
 	return 0, false, fmt.Errorf("no %s bus found", ROUTE)
