@@ -13,6 +13,7 @@ import (
 const (
 	BASE_URL       = "https://bus-med.1337.ma/api"
 	TOKEN    = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOjIxOSwibG9naW4iOiJtb3phaG5vdSIsImlhdCI6MTc2OTY3NjE2MCwiZXhwIjoxNzcwMjgwOTYwfQ.qKF1BZ2_iXsxLdedwO_5FFEbjWVB9o45jTr_0CyHFQ4"
+	ROUTE  = "Martil"
 	PRELOAD_LEAD   = 10 * time.Second  // how many seconds before to prefetch departure
 	REQUEST_TIMEOUT = 5 * time.Second  // per request timeout
 )
